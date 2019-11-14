@@ -1,0 +1,282 @@
+---
+title: "Comparison of tracts after registration"
+output: html_notebook
+---
+
+## Intro
+
+The idea is to try and compare the same FlyCircuit neurons after registration
+using CMTK (Cambridge) or FlyCircuit's default pipeline (FCv1.2 online).
+
+It is my impression going into this analysis that the mean and absolute
+dispersion after the Amira based registration in v1.2 is greater than for our
+standard CMTK registration. I would put this down to the use of single 
+template brains that were acquired some time ago rather than an average brain,
+which has higher S/N and is more medial in its overall shape. See also 
+Bogovic and Saalfeld 
+
+
+```{r}
+library(flycircuit)
+library(natverse)
+```
+
+```{r}
+load("dl2d.rda")
+```
+
+```{r}
+clear3d()
+plot3d(dl2d.both, col=orig, colpal = c('cam'='cyan', fc='red'))
+```
+
+
+```{r}
+plot(dl2d.fc)
+```
+
+Let's cut around 400
+
+```{r}
+dl2d.both=c(dl2d.cam, dl2d.fc)
+dl2d.both[,'orig']=ifelse(names(dl2d.both) %in% names(dl2d.cam), 'cam', 'fc')
+
+spines=nlapply(dl2d.both, spine)
+
+tract_vector <- function(n, xval=400, thresh=10) {
+  p=xyzmatrix(n)
+  near=abs(p[,'X']-xval)<thresh
+  pc=prcomp(p[near,], )
+  c(colMeans(p[near,]), pc$rotation[,'PC1'])
+}
+
+
+tvsl=nlapply(spines, tract_vector, OmitFailures = T)
+tvs=do.call(rbind, tvsl)
+mean_cent=colMeans(tvs[,1:3])
+mean_vec=colMeans(tvs[,4:6])
+
+
+# nb *10 to make the vector longer (10 µm) and more visible
+res2=rbind(mean_cent-mean_vec*10, mean_cent, mean_cent+mean_vec*10)
+
+plot(spines, col='grey', WithNodes=F)
+lines(res2[,1:2], lwd=3)
+
+```
+
+```{r}
+plot3d(spines)
+plc=plane_coefficients(mean_cent, mean_vec)
+planes3d(plc[,1:3], d=plc[,'d'])
+
+```
+
+```{r}
+clear3d()
+make_centred_plane <- function(point, normal, scale = 1) {
+  # find the two orthogonal vectors to this one
+  uv = Morpho::tangentPlane(normal)
+  uv = sapply(uv, "*", scale, simplify = F)
+  qmesh3d(
+  cbind(
+  point + uv$z,
+  point + uv$y,
+  point - uv$z,
+  point - uv$y
+  ),
+  homogeneous = F,
+  indices = 1:4
+  )
+}
+plane=make_centred_plane(mean_cent, mean_vec, scale=15)
+plot3d(spines, col='grey')
+shade3d(plane, col='red')
+```
+
+```{r}
+intersections=t(sapply(dl2d.both, intersect_plane, plc, closestpoint=mean_cent))
+intersections.cent=scale(intersections, center = T, scale = F)
+d=sqrt(rowSums(intersections.cent^2))
+mean(d)
+```
+
+```{r}
+spheres3d(intersections, col='red', rad=.5)
+shade3d(plane, col='black')
+plot3d(spines, col='grey')
+```
+
+```{r}
+uv = Morpho::tangentPlane(mean_vec)
+# centre our points on mean
+sp=scale(intersections, scale = F, center=T)
+DotProduct=function(a,b) sum(a*b)
+# find coordinates w.r.t. to our two basis vectors
+xy=data.frame(u=apply(sp, 1, DotProduct, uv[[1]]),
+           v=apply(sp, 1, DotProduct, uv[[2]]))
+# maintain consist x-y aspect ratio 
+plot(xy, pch=19, asp=1, main = "Position of Axon intersection in plane", 
+     xlab="u /µm", ylab="v /µm")
+
+```
+
+```{r}
+xy$orig=spines[,'orig']
+plot(xy[1:2], pch=19, asp=1, main = "Position of Axon intersection in plane", 
+     xlab="u /µm", ylab="v /µm", col=ifelse(xy$orig=='fc', 'red', '#a3c1ad'))
+
+```
+
+
+Let's look at dispersion by registration origin
+
+```{r}
+zz=by(xy[1:2], INDICES = xy$orig, scale, scale=FALSE)
+
+rownorm <- function(x) apply(x, 1, function(r) sqrt(sum(r^2)))
+
+devs=sapply(zz, rownorm, simplify = F)
+sapply(devs, mean)
+t.test(devs$cam, devs$fc)
+```
+
+
+Let's find a bunch of tract vectors near specific points.
+
+```{r}
+tract_vector_xyz <- function(n, xyz, thresh=10) {
+  p=xyzmatrix(n)
+  cent=scale(p, center = xyz, scale = F)
+  d=sqrt(rowSums(cent^2))
+  near=d<thresh
+  pc=prcomp(p[near,, drop=FALSE], )
+  c(colMeans(p[near,]), pc$rotation[,'PC1'])
+}
+tract_vectors <- function(x, xyz, ...) {
+  tvsl=nlapply(spines, tract_vector_xyz, xyz=xyz, OmitFailures = T)
+  tvs=do.call(rbind, tvsl)
+  list(mean_cent=colMeans(tvs[,1:3]),
+       mean_vec=colMeans(tvs[,4:6]))
+}
+```
+
+Now to choose the specific points, let's take one of the spines and choose
+evenly spaced points along it. First lets's choose the most medial spine.
+
+```{r}
+dl2d.both.dps=dotprops(spines, k=5, resample=1)
+dl2d.both.aba=nblast_allbyall(dl2d.both.dps, normalisation = 'mean')
+hist(colMeans(dl2d.both.aba))
+best_neuron=names(which.max(colMeans(dl2d.both.aba)))
+```
+
+
+```{r}
+spines[[best_neuron]]
+best.30=resample(spines[[best_neuron]], stepsize = 30)
+plot(best.30)
+```
+
+
+Now let's use the 3rd to n-1 points
+
+```{r}
+pointstouse <- xyzmatrix(best.30)[3:(nvertices(best.30)-2), ]
+pointstouse
+```
+
+```{r}
+planes=apply(pointstouse, 1, function(xyz) tract_vectors(spines, xyz=xyz, threshold=10))
+head(planes, n = 3)
+```
+
+
+Now let's find the intersections on a plane for each of those locations
+
+```{r}
+
+project2plane <- function(data, mean_cent, mean_vec) {
+  plc=plane_coefficients(mean_cent, mean_vec)
+  intersections=t(sapply(data, intersect_plane, plc, closestpoint=mean_cent))
+  uv = Morpho::tangentPlane(mean_vec)
+  # centre our points on mean
+  sp=scale(intersections, scale = F, center=T)
+  DotProduct=function(a,b) sum(a*b)
+# find coordinates w.r.t. to our two basis vectors
+  xy=data.frame(u=apply(sp, 1, DotProduct, uv[[1]]),
+           v=apply(sp, 1, DotProduct, uv[[2]]))
+  xy
+}
+
+projected=sapply(planes, function(plc) project2plane(spines, plc$mean_cent,plc$mean_vec), simplify = F)
+resdf=dplyr::bind_rows(projected, .id = 'pos')
+resdf$name=rep(names(spines), length(projected))
+resdf$orig=rep(spines[,'orig'], length(projected))
+```
+
+```{r}
+library(ggplot2)
+qplot(u,v, data=subset(resdf, pos%in%3:7), col=orig)+facet_wrap(~pos)+
+  scale_color_manual(values = c('cam'='cyan', fc='red'))
+```
+
+Let's look at distance from centroid at each of those points
+
+```{r}
+library(dplyr)
+resdf2 <- resdf %>%
+  filter(pos%in%3:7) %>%
+  group_by(pos, orig) %>%
+  mutate(u=u-mean(u), v=v-mean(v)) %>%
+  rowwise() %>%
+  mutate(d=sqrt(sum(u^2+v^2)))
+
+resdf3 <- resdf2 %>%
+  group_by(pos, orig) %>%
+  summarise(md=mean(d))
+```
+
+Now we can plot the mean dispersion at those different locations 
+
+```{r}
+qplot(factor(orig), md, data=resdf3, col=pos, ylim=c(0,NA), 
+      ylab='Mean dispersion /µm', xlab='Registration')
+```
+
+```{r}
+resdf3.wide=tidyr::pivot_wider(resdf3, names_from = 'orig', values_from='md')
+resdf3.wide
+```
+
+```{r}
+qplot(cam, fc, data=resdf3.wide, xlim=c(1.5,4.5), ylim=c(1.5,4.5),
+      xlab='Mean dispersion, Cambridge /µm', ylab='Mean dispersion, FC 1.2 /µm')+
+  geom_abline(slope=1, lty=2)+
+  geom_smooth(method = 'lm', se = F)
+```
+
+
+```{r}
+qplot(factor(orig), d, data=resdf2, col=orig) + 
+  scale_colour_manual(values = c('cam'='cyan', fc='red'))+
+  facet_wrap(~pos)+geom_boxplot()
+```
+
+
+```{r}
+plot_centred_plane <- function(plc, scale=1, ...) {
+  plane=make_centred_plane(plc$mean_cent, plc$mean_vec, scale=scale)
+  shade3d(plane, ...)
+}
+```
+
+```{r}
+clear3d()
+plot3d(spines[[best_neuron]], lwd=2, col='black')
+# plot3d(spines, col=orig, colpal = c('cam'='#a3c1ad', fc='red'))
+plot3d(spines, col=orig, colpal = c('cam'='cyan', fc='red'))
+sapply(planes[-(1:2)], plot_centred_plane, scale=15, col='grey')
+
+```
+
